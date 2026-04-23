@@ -30,6 +30,7 @@ class PPOStillAgent(AgentInterface):
         )
         self._load_checkpoint()
         self.model.eval()
+        self.name = "PPOStill"
 
     def _load_checkpoint(self):
         checkpoint_path = self._find_checkpoint()
