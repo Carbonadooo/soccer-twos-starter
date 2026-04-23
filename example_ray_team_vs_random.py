@@ -1,3 +1,5 @@
+import os
+
 import ray
 from ray import tune
 from soccer_twos import EnvType
@@ -9,7 +11,12 @@ NUM_ENVS_PER_WORKER = 5
 
 
 if __name__ == "__main__":
-    ray.init()
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        [project_dir, os.environ.get("PYTHONPATH", "")]
+    )
+
+    ray.init(num_gpus=0, include_dashboard=False)
 
     tune.registry.register_env("Soccer", create_rllib_env)
 
@@ -18,7 +25,7 @@ if __name__ == "__main__":
         name="PPO_1",
         config={
             # system settings
-            "num_gpus": 1,
+            "num_gpus": 0,
             "num_workers": 8,
             "num_envs_per_worker": NUM_ENVS_PER_WORKER,
             "log_level": "INFO",
@@ -36,7 +43,7 @@ if __name__ == "__main__":
             },
         },
         stop={
-            "timesteps_total": 20000000,  # 15M
+            "timesteps_total": 3000000,
             # "time_total_s": 14400, # 4h
         },
         checkpoint_freq=100,
