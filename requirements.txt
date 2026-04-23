@@ -10,3 +10,4 @@ numpy==1.19.5
 ray==1.4.0
 ray[tune]==1.4.0
 ray[rllib]==1.4.0
+torch==1.8.1
