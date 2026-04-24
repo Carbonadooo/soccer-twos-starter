@@ -30,6 +30,11 @@ NUM_ENVS_PER_WORKER = 3
 MAX_TIMESTEPS    = 5_000_000
 SAVE_EVERY_ITERS = 200
 
+# Module-level globals so workers can access mean/std without env_config
+_bc_data = torch.load(BC_CKPT, map_location="cpu")
+OBS_MEAN = _bc_data["obs_mean"]   # np.ndarray (336,)
+OBS_STD  = _bc_data["obs_std"]    # np.ndarray (336,)
+
 
 # ── Obs normalisation wrapper ──────────────────────────────────────────────────
 
@@ -55,9 +60,9 @@ class ObsNormWrapper(gym.Wrapper):
 # ── Env factory ───────────────────────────────────────────────────────────────
 
 def create_obs0_env(env_config: dict = {}):
-    # Extract normalisation stats before passing config to soccer_twos.make
-    mean = np.array(env_config.pop("obs_mean"))
-    std  = np.array(env_config.pop("obs_std"))
+    # Use get (not pop) — Ray calls this multiple times per worker
+    mean = np.array(env_config.get("obs_mean", OBS_MEAN))
+    std  = np.array(env_config.get("obs_std",  OBS_STD))
 
     if hasattr(env_config, "worker_index"):
         env_config["worker_id"] = (
@@ -65,7 +70,11 @@ def create_obs0_env(env_config: dict = {}):
             + env_config.vector_index
         )
 
-    env = soccer_twos.make(**env_config)
+    # Filter out custom keys before passing to soccer_twos.make
+    _CUSTOM_KEYS = {"obs_mean", "obs_std"}
+    soccer_config = {k: v for k, v in env_config.items() if k not in _CUSTOM_KEYS}
+
+    env = soccer_twos.make(**soccer_config)
     env = ObsNormWrapper(env, mean, std)
     return RLLibWrapper(env)
 
