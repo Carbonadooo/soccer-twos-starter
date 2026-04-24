@@ -31,7 +31,7 @@ BC_CHECKPOINT_PATH = Path("bc_results/baseline_bc/best.pt")
 
 def parse_args():
     parser = ArgumentParser(description="Finetune a BC-initialized player policy against the baseline.")
-    parser.add_argument("--timesteps-total", type=int, default=1200000)
+    parser.add_argument("--timesteps-total", type=int, default=600000)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--num-envs-per-worker", type=int, default=NUM_ENVS_PER_WORKER)
     parser.add_argument("--rollout-fragment-length", type=int, default=500)
