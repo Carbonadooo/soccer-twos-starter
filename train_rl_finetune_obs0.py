@@ -119,11 +119,14 @@ if __name__ == "__main__":
     temp_env.close()
 
     config = {
+        # ── system ────────────────────────────────────────────────────────────
         "num_gpus": 0,
         "num_workers": 8,
         "num_envs_per_worker": NUM_ENVS_PER_WORKER,
         "log_level": "WARN",
         "framework": "torch",
+
+        # ── multiagent self-play ───────────────────────────────────────────────
         "multiagent": {
             "policies": {"default": (None, obs_space, act_space, {})},
             "policy_mapping_fn": tune.function(lambda _: "default"),
@@ -136,12 +139,30 @@ if __name__ == "__main__":
             "obs_mean": obs_mean,
             "obs_std":  obs_std,
         },
+
+        # ── model ─────────────────────────────────────────────────────────────
         "model": {
             "vf_share_layers": True,
             "fcnet_hiddens": [512, 512],
         },
-        "clip_param": 0.1,   # smaller clip to protect BC initialisation
-        "lr": 3e-5,
+
+        # ── core PPO ──────────────────────────────────────────────────────────
+        "clip_param":         0.1,    # small: protect BC init from being overwritten
+        "lr":                 3e-5,   # fine-tune lr, smaller than default 5e-5
+        "num_sgd_iter":       15,     # default 30 risks overfitting with sparse rewards
+        "sgd_minibatch_size": 512,    # larger minibatch → more stable gradients
+
+        # ── batch / episode ───────────────────────────────────────────────────
+        "train_batch_size":   8000,   # soccer episodes ~600 steps, need big batches
+        "batch_mode":         "complete_episodes",  # don't cut episodes mid-way
+
+        # ── reward / advantage ────────────────────────────────────────────────
+        "gamma":              0.99,   # long-horizon soccer
+        "lambda":             0.95,   # GAE: reduce variance for sparse rewards
+
+        # ── exploration & stability ───────────────────────────────────────────
+        "entropy_coeff":      0.01,   # must have entropy for self-play exploration
+        "vf_loss_coeff":      0.5,    # higher weight on critic (vf_share_layers=True)
     }
 
     trainer = PPOTrainer(config=config, env="Soccer")
