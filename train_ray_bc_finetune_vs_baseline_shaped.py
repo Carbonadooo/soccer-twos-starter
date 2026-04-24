@@ -26,7 +26,7 @@ from imitation_player_utils import TorchPolicyActor, load_baseline_model
 
 
 NUM_ENVS_PER_WORKER = 2
-BC_CHECKPOINT_PATH = Path("bc_results/baseline_bc/best.pt")
+BC_CHECKPOINT_PATH = Path("bc_agent/checkpoint.pth")
 FIELD_HALF_LENGTH = 14.0
 PREDICTION_HORIZON = 0.25
 GOAL_Z = 0.0
@@ -38,7 +38,7 @@ def parse_args():
     parser = ArgumentParser(
         description="Finetune a BC-initialized player policy against the baseline with reward shaping."
     )
-    parser.add_argument("--timesteps-total", type=int, default=3600000)
+    parser.add_argument("--timesteps-total", type=int, default=7200000)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--num-envs-per-worker", type=int, default=NUM_ENVS_PER_WORKER)
     parser.add_argument("--rollout-fragment-length", type=int, default=500)
@@ -225,22 +225,27 @@ class BCInitPlayerModel(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
-        self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), 256)
-        self.hidden2 = nn.Linear(256, 256)
-        self.logits = nn.Linear(256, num_outputs)
-        self.value_branch = nn.Linear(256, 1)
+        hidden_size = 512
+        self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), hidden_size)
+        self.hidden2 = nn.Linear(hidden_size, hidden_size)
+        self.logits = nn.Linear(hidden_size, num_outputs)
+        self.value_branch = nn.Linear(hidden_size, 1)
         self._value_out = None
 
         bc_path = model_config.get("custom_model_config", {}).get("bc_checkpoint_path")
         if bc_path and Path(bc_path).exists():
             payload = torch.load(bc_path, map_location="cpu")
-            state_dict = payload["model_state_dict"] if "model_state_dict" in payload else payload
-            self.hidden1.weight.data.copy_(state_dict["hidden1.weight"])
-            self.hidden1.bias.data.copy_(state_dict["hidden1.bias"])
-            self.hidden2.weight.data.copy_(state_dict["hidden2.weight"])
-            self.hidden2.bias.data.copy_(state_dict["hidden2.bias"])
-            self.logits.weight.data.copy_(state_dict["logits.weight"])
-            self.logits.bias.data.copy_(state_dict["logits.bias"])
+            state_dict = payload["state_dict"] if "state_dict" in payload else payload
+            self.hidden1.weight.data.copy_(state_dict["shared.0.weight"])
+            self.hidden1.bias.data.copy_(state_dict["shared.0.bias"])
+            self.hidden2.weight.data.copy_(state_dict["shared.2.weight"])
+            self.hidden2.bias.data.copy_(state_dict["shared.2.bias"])
+
+            # Convert three 512->3 branch heads into a single 512->9 logits layer.
+            head_weights = [state_dict[f"heads.{branch_idx}.weight"] for branch_idx in range(3)]
+            head_biases = [state_dict[f"heads.{branch_idx}.bias"] for branch_idx in range(3)]
+            self.logits.weight.data.copy_(torch.cat(head_weights, dim=0))
+            self.logits.bias.data.copy_(torch.cat(head_biases, dim=0))
 
     def forward(self, input_dict, state, seq_lens):
         x = input_dict["obs_flat"].float()

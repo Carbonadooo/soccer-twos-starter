@@ -14,14 +14,16 @@ class BaselineBCFinetuneAgent(AgentInterface):
     def __init__(self, env):
         super().__init__()
         self.name = "BaselineBCFinetuneAgent"
-        obs_size = int(env.observation_space.shape[0])
-        action_logits_size = int(len(env.action_space.nvec) * env.action_space.nvec[0])
-        self.model = PlayerPolicyNet(
-            obs_size=obs_size,
-            hidden_size=256,
-            action_logits_size=action_logits_size,
-        )
+        self.obs_size = int(env.observation_space.shape[0])
+        self.action_logits_size = int(len(env.action_space.nvec) * env.action_space.nvec[0])
+        self.model = None
         self._load_checkpoint()
+        if self.model is None:
+            self.model = PlayerPolicyNet(
+                obs_size=self.obs_size,
+                hidden_size=256,
+                action_logits_size=self.action_logits_size,
+            )
         self.model.eval()
 
     def _find_checkpoint(self):
@@ -47,6 +49,12 @@ class BaselineBCFinetuneAgent(AgentInterface):
         worker_state = pickle.loads(checkpoint["worker"])
         policy_state = worker_state["state"]["default"]
         if "hidden1.weight" in policy_state:
+            hidden_size = int(policy_state["hidden1.weight"].shape[0])
+            self.model = PlayerPolicyNet(
+                obs_size=self.obs_size,
+                hidden_size=hidden_size,
+                action_logits_size=self.action_logits_size,
+            )
             self.model.hidden1.weight.data.copy_(torch.from_numpy(policy_state["hidden1.weight"]))
             self.model.hidden1.bias.data.copy_(torch.from_numpy(policy_state["hidden1.bias"]))
             self.model.hidden2.weight.data.copy_(torch.from_numpy(policy_state["hidden2.weight"]))
@@ -56,6 +64,12 @@ class BaselineBCFinetuneAgent(AgentInterface):
             return
 
         # Fallback for RLlib default fcnet checkpoints if this package is reused.
+        hidden_size = int(policy_state["_hidden_layers.0._model.0.weight"].shape[0])
+        self.model = PlayerPolicyNet(
+            obs_size=self.obs_size,
+            hidden_size=hidden_size,
+            action_logits_size=self.action_logits_size,
+        )
         self.model.hidden1.weight.data.copy_(
             torch.from_numpy(policy_state["_hidden_layers.0._model.0.weight"])
         )
