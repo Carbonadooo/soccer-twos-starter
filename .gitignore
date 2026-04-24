@@ -137,3 +137,6 @@ dmypy.json
 .pyre/
 
 .codex
+
+ALPHA_GOAL_AGENT
+ALPHA_GOAL_AGENT.zip
