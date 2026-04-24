@@ -2,7 +2,7 @@
 
 **Agent name:** BaselineBCFinetuneShapedAgent
 
-**Author(s):** Shaoyu
+**Author(s):** Shaoyu, Haoran
 
 ## Description
 

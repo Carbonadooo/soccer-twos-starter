@@ -1,4 +1,5 @@
 import os
+import pickle
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -22,11 +23,19 @@ from ray.tune.logger import CSVLoggerCallback, JsonLoggerCallback
 from soccer_twos import EnvType
 
 import soccer_twos
-from imitation_player_utils import TorchPolicyActor, load_baseline_model
 
 
 NUM_ENVS_PER_WORKER = 2
+<<<<<<< HEAD
 BC_CHECKPOINT_PATH = Path("bc_obs_0/checkpoint.pth")
+=======
+BC_CHECKPOINT_PATH = Path("bc_agent/checkpoint.pth")
+BASELINE_CHECKPOINT_PATH = Path(
+    "ceia_baseline_agent"
+    "/ray_results/PPO_selfplay_twos/PPO_Soccer_f475e_00000_0_2021-09-19_15-54-02"
+    "/checkpoint_002449/checkpoint-2449"
+)
+>>>>>>> ba1dfc1e225cc4bf326bd32808d3bcf1b0e72f52
 FIELD_HALF_LENGTH = 14.0
 PREDICTION_HORIZON = 0.25
 GOAL_Z = 0.0
@@ -38,7 +47,7 @@ def parse_args():
     parser = ArgumentParser(
         description="Finetune a BC-initialized player policy against the baseline with reward shaping."
     )
-    parser.add_argument("--timesteps-total", type=int, default=3600000)
+    parser.add_argument("--timesteps-total", type=int, default=7200000)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--num-envs-per-worker", type=int, default=NUM_ENVS_PER_WORKER)
     parser.add_argument("--rollout-fragment-length", type=int, default=500)
@@ -52,6 +61,66 @@ def parse_args():
         default="PPO_bc_finetune_vs_baseline_shaped_lr2e5_clip01_3p6M",
     )
     return parser.parse_args()
+
+
+class BaselinePolicyNet(nn.Module):
+    def __init__(self, obs_size: int = 336, hidden_size: int = 256, action_logits_size: int = 9):
+        super().__init__()
+        self.hidden1 = nn.Linear(obs_size, hidden_size)
+        self.hidden2 = nn.Linear(hidden_size, hidden_size)
+        self.logits = nn.Linear(hidden_size, action_logits_size)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        x = torch.relu(self.hidden1(obs))
+        x = torch.relu(self.hidden2(x))
+        return self.logits(x)
+
+
+def _load_baseline_policy_state(checkpoint_path: Path):
+    with checkpoint_path.open("rb") as checkpoint_file:
+        checkpoint = pickle.load(checkpoint_file)
+    worker_state = pickle.loads(checkpoint["worker"])
+    return worker_state["state"]["default"]
+
+
+def load_baseline_model(checkpoint_path: Path = BASELINE_CHECKPOINT_PATH) -> BaselinePolicyNet:
+    policy_state = _load_baseline_policy_state(Path(checkpoint_path))
+    model = BaselinePolicyNet(obs_size=336, hidden_size=256, action_logits_size=9)
+    model.hidden1.weight.data.copy_(
+        torch.from_numpy(policy_state["_hidden_layers.0._model.0.weight"])
+    )
+    model.hidden1.bias.data.copy_(
+        torch.from_numpy(policy_state["_hidden_layers.0._model.0.bias"])
+    )
+    model.hidden2.weight.data.copy_(
+        torch.from_numpy(policy_state["_hidden_layers.1._model.0.weight"])
+    )
+    model.hidden2.bias.data.copy_(
+        torch.from_numpy(policy_state["_hidden_layers.1._model.0.bias"])
+    )
+    model.logits.weight.data.copy_(torch.from_numpy(policy_state["_logits._model.0.weight"]))
+    model.logits.bias.data.copy_(torch.from_numpy(policy_state["_logits._model.0.bias"]))
+    model.eval()
+    return model
+
+
+class TorchPolicyActor:
+    def __init__(self, model: nn.Module, device: str = "cpu"):
+        self.model = model.to(device)
+        self.device = device
+        self.model.eval()
+
+    def act(self, observation):
+        ordered_ids = sorted(observation.keys())
+        obs_array = np.stack(
+            [np.asarray(observation[player_id], dtype=np.float32) for player_id in ordered_ids],
+            axis=0,
+        )
+        with torch.no_grad():
+            obs_tensor = torch.from_numpy(obs_array).to(self.device)
+            logits = self.model(obs_tensor).view(-1, 3, 3)
+            actions = torch.argmax(logits, dim=-1).cpu().numpy().astype(np.int64)
+        return {player_id: actions[idx] for idx, player_id in enumerate(ordered_ids)}
 
 
 class BaselineShapingHelper:
@@ -240,16 +309,25 @@ class BCInitPlayerModel(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
+<<<<<<< HEAD
         # Match bc_obs_0 architecture: [512, 512]
         self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), 512)
         self.hidden2 = nn.Linear(512, 512)
         self.logits = nn.Linear(512, num_outputs)
         self.value_branch = nn.Linear(512, 1)
+=======
+        hidden_size = 512
+        self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), hidden_size)
+        self.hidden2 = nn.Linear(hidden_size, hidden_size)
+        self.logits = nn.Linear(hidden_size, num_outputs)
+        self.value_branch = nn.Linear(hidden_size, 1)
+>>>>>>> ba1dfc1e225cc4bf326bd32808d3bcf1b0e72f52
         self._value_out = None
 
         bc_path = model_config.get("custom_model_config", {}).get("bc_checkpoint_path")
         if bc_path and Path(bc_path).exists():
             payload = torch.load(bc_path, map_location="cpu")
+<<<<<<< HEAD
             sd = payload["state_dict"]   # bc_obs_0 format
             # Map bc_obs_0 keys → model keys
             self.hidden1.weight.data.copy_(sd["shared.0.weight"])
@@ -261,6 +339,19 @@ class BCInitPlayerModel(TorchModelV2, nn.Module):
             logit_b = torch.cat([sd["heads.0.bias"],   sd["heads.1.bias"],   sd["heads.2.bias"]],   dim=0)
             self.logits.weight.data.copy_(logit_w)
             self.logits.bias.data.copy_(logit_b)
+=======
+            state_dict = payload["state_dict"] if "state_dict" in payload else payload
+            self.hidden1.weight.data.copy_(state_dict["shared.0.weight"])
+            self.hidden1.bias.data.copy_(state_dict["shared.0.bias"])
+            self.hidden2.weight.data.copy_(state_dict["shared.2.weight"])
+            self.hidden2.bias.data.copy_(state_dict["shared.2.bias"])
+
+            # Convert three 512->3 branch heads into a single 512->9 logits layer.
+            head_weights = [state_dict[f"heads.{branch_idx}.weight"] for branch_idx in range(3)]
+            head_biases = [state_dict[f"heads.{branch_idx}.bias"] for branch_idx in range(3)]
+            self.logits.weight.data.copy_(torch.cat(head_weights, dim=0))
+            self.logits.bias.data.copy_(torch.cat(head_biases, dim=0))
+>>>>>>> ba1dfc1e225cc4bf326bd32808d3bcf1b0e72f52
 
     def forward(self, input_dict, state, seq_lens):
         x = input_dict["obs_flat"].float()
