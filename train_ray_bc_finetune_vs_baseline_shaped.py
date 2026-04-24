@@ -29,20 +29,28 @@ NUM_ENVS_PER_WORKER = 2
 BC_CHECKPOINT_PATH = Path("bc_results/baseline_bc/best.pt")
 FIELD_HALF_LENGTH = 14.0
 PREDICTION_HORIZON = 0.25
+GOAL_Z = 0.0
+OWN_GOAL = np.asarray([-FIELD_HALF_LENGTH, GOAL_Z], dtype=np.float32)
+OPP_GOAL = np.asarray([FIELD_HALF_LENGTH, GOAL_Z], dtype=np.float32)
 
 
 def parse_args():
     parser = ArgumentParser(
         description="Finetune a BC-initialized player policy against the baseline with reward shaping."
     )
-    parser.add_argument("--timesteps-total", type=int, default=600000)
+    parser.add_argument("--timesteps-total", type=int, default=3600000)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--num-envs-per-worker", type=int, default=NUM_ENVS_PER_WORKER)
     parser.add_argument("--rollout-fragment-length", type=int, default=500)
     parser.add_argument("--train-batch-size", type=int, default=8000)
     parser.add_argument("--checkpoint-freq", type=int, default=20)
     parser.add_argument("--bc-checkpoint", default=str(BC_CHECKPOINT_PATH))
-    parser.add_argument("--experiment-name", default="PPO_bc_finetune_vs_baseline_shaped")
+    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument("--clip-param", type=float, default=0.1)
+    parser.add_argument(
+        "--experiment-name",
+        default="PPO_bc_finetune_vs_baseline_shaped_lr2e5_clip01_3p6M",
+    )
     return parser.parse_args()
 
 
@@ -53,70 +61,118 @@ class BaselineShapingHelper:
     def reset(self):
         self._prev_ball_potential = None
 
+    @staticmethod
+    def _safe_array(value):
+        return np.asarray(value, dtype=np.float32)
+
+    @staticmethod
+    def _predicted_position(position, velocity):
+        return position + PREDICTION_HORIZON * velocity
+
+    @staticmethod
+    def _exp_distance_reward(distance, scale):
+        return float(np.exp(-distance / scale))
+
     def shape_rewards(self, info):
         if not info or 0 not in info or 1 not in info:
             return {0: 0.0, 1: 0.0}
 
         controlled_players = [info[0], info[1]]
         try:
-            ball_pos = np.asarray(
-                controlled_players[0]["ball_info"]["position"], dtype=np.float32
-            )
-            ball_vel = np.asarray(
-                controlled_players[0]["ball_info"]["velocity"], dtype=np.float32
-            )
+            ball_pos = self._safe_array(controlled_players[0]["ball_info"]["position"])
+            ball_vel = self._safe_array(controlled_players[0]["ball_info"]["velocity"])
         except (KeyError, TypeError, ValueError):
             return {0: 0.0, 1: 0.0}
 
-        pred_ball = ball_pos + PREDICTION_HORIZON * ball_vel
+        pred_ball = self._predicted_position(ball_pos, ball_vel)
         pred_ball_x = float(np.clip(pred_ball[0], -FIELD_HALF_LENGTH, FIELD_HALF_LENGTH))
         pred_ball_z = float(pred_ball[1])
 
-        # Team-level progress shaping shared by both trained players.
+        # Shared team-level ball progress: only reward forward progress increments.
         progress_reward = 0.0
         ball_potential = pred_ball_x / FIELD_HALF_LENGTH
         if self._prev_ball_potential is not None:
             progress_reward = 0.02 * float(ball_potential - self._prev_ball_potential)
         self._prev_ball_potential = ball_potential
 
-        shaped = {}
+        player_states = []
         for player_id, player_info in zip([0, 1], controlled_players):
             try:
-                player_pos = np.asarray(
-                    player_info["player_info"]["position"], dtype=np.float32
-                )
-                player_vel = np.asarray(
-                    player_info["player_info"].get("velocity", [0.0, 0.0]),
-                    dtype=np.float32,
+                player_pos = self._safe_array(player_info["player_info"]["position"])
+                player_vel = self._safe_array(
+                    player_info["player_info"].get("velocity", [0.0, 0.0])
                 )
             except (KeyError, TypeError, ValueError):
-                shaped[player_id] = 0.0
                 continue
 
-            pred_player = player_pos + PREDICTION_HORIZON * player_vel
-            pred_player_x = float(
-                np.clip(pred_player[0], -FIELD_HALF_LENGTH, FIELD_HALF_LENGTH)
+            pred_player = self._predicted_position(player_pos, player_vel)
+            pred_player[0] = np.clip(pred_player[0], -FIELD_HALF_LENGTH, FIELD_HALF_LENGTH)
+            player_states.append(
+                {
+                    "player_id": player_id,
+                    "pred_pos": pred_player,
+                    "dist_to_ball": float(np.linalg.norm(pred_player - pred_ball)),
+                }
             )
-            pred_player_z = float(pred_player[1])
-            lateral_alignment = float(np.exp(-abs(pred_player_z - pred_ball_z) / 3.0))
 
-            lane_reward = 0.0
-            if pred_ball_x < 0.0:
-                in_defensive_lane = -FIELD_HALF_LENGTH <= pred_player_x <= pred_ball_x
-                lane_reward = (
-                    0.004 * lateral_alignment
-                    if in_defensive_lane
-                    else -0.004 * lateral_alignment
-                )
-            else:
-                in_attacking_lane = pred_player_x <= pred_ball_x <= FIELD_HALF_LENGTH
-                lane_reward = (
-                    0.004 * lateral_alignment
-                    if in_attacking_lane
-                    else -0.004 * lateral_alignment
-                )
+        if len(player_states) != 2:
+            return {0: 0.0, 1: 0.0}
 
-            shaped[player_id] = float(progress_reward + lane_reward)
+        nearest_idx = int(np.argmin([state["dist_to_ball"] for state in player_states]))
+        support_idx = 1 - nearest_idx
+        nearest = player_states[nearest_idx]
+        support = player_states[support_idx]
+
+        shaped = {0: 0.0, 1: 0.0}
+        shaped[0] += progress_reward
+        shaped[1] += progress_reward
+
+        # The closer player should actively contest/control the ball.
+        contest_reward = 0.006 * self._exp_distance_reward(nearest["dist_to_ball"], 2.2)
+        shaped[nearest["player_id"]] += contest_reward
+
+        # Reward at least one defender being between ball and own goal in own half.
+        defenders_between = 0
+        for state in player_states:
+            player_x, player_z = state["pred_pos"]
+            between_goal_and_ball = OWN_GOAL[0] <= player_x <= pred_ball_x
+            aligned_with_ball_lane = abs(player_z - pred_ball_z) <= 2.5
+            if between_goal_and_ball and aligned_with_ball_lane:
+                defenders_between += 1
+
+        if pred_ball_x < 0.0:
+            coverage_bonus = 0.004 if defenders_between > 0 else -0.004
+            shaped[0] += coverage_bonus
+            shaped[1] += coverage_bonus
+
+        # Role-specific support shaping inspired by get-open / cover behavior.
+        support_x, support_z = support["pred_pos"]
+        nearest_x, nearest_z = nearest["pred_pos"]
+
+        if pred_ball_x >= 0.0:
+            # Attacking phase: support player stays slightly behind the ball with useful width.
+            behind_ball = pred_ball_x - 5.0 <= support_x <= pred_ball_x - 0.5
+            lateral_target = 2.5
+            lateral_gap = abs(support_z - pred_ball_z)
+            width_reward = 0.003 * max(0.0, 1.0 - abs(lateral_gap - lateral_target) / 2.5)
+            support_reward = width_reward if behind_ball else -0.003
+            shaped[support["player_id"]] += support_reward
+        else:
+            # Defensive phase: support player should cover the goal lane from behind the ball.
+            between_goal_and_ball = OWN_GOAL[0] <= support_x <= pred_ball_x
+            lane_alignment = 0.0035 * self._exp_distance_reward(abs(support_z - pred_ball_z), 1.8)
+            shaped[support["player_id"]] += lane_alignment if between_goal_and_ball else -0.0035
+
+        # Mild anti-crowding term: don't have both agents collapse onto the same point.
+        teammate_gap = float(np.linalg.norm(nearest["pred_pos"] - support["pred_pos"]))
+        if teammate_gap < 1.2:
+            crowd_penalty = 0.0035 * (1.2 - teammate_gap) / 1.2
+            shaped[nearest["player_id"]] -= crowd_penalty
+            shaped[support["player_id"]] -= crowd_penalty
+
+        # Encourage the support player to be on a different lateral line than the ball winner.
+        lateral_separation = abs(support_z - nearest_z)
+        shaped[support["player_id"]] += 0.002 * min(lateral_separation / 2.5, 1.0)
 
         return shaped
 
@@ -250,6 +306,8 @@ if __name__ == "__main__":
             "num_envs_per_worker": args.num_envs_per_worker,
             "log_level": "WARN",
             "framework": "torch",
+            "lr": args.lr,
+            "clip_param": args.clip_param,
             "multiagent": {
                 "policies": {
                     "default": (None, obs_space, act_space, {}),

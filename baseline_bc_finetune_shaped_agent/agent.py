@@ -46,6 +46,14 @@ class BaselineBCFinetuneShapedAgent(AgentInterface):
 
         worker_state = pickle.loads(checkpoint["worker"])
         policy_state = worker_state["state"]["default"]
+        if "hidden1.weight" in policy_state:
+            self.model.hidden1.weight.data.copy_(torch.from_numpy(policy_state["hidden1.weight"]))
+            self.model.hidden1.bias.data.copy_(torch.from_numpy(policy_state["hidden1.bias"]))
+            self.model.hidden2.weight.data.copy_(torch.from_numpy(policy_state["hidden2.weight"]))
+            self.model.hidden2.bias.data.copy_(torch.from_numpy(policy_state["hidden2.bias"]))
+            self.model.logits.weight.data.copy_(torch.from_numpy(policy_state["logits.weight"]))
+            self.model.logits.bias.data.copy_(torch.from_numpy(policy_state["logits.bias"]))
+            return
 
         self.model.hidden1.weight.data.copy_(
             torch.from_numpy(policy_state["_hidden_layers.0._model.0.weight"])

@@ -3,8 +3,11 @@ import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 
 DEFAULT_METRIC_GROUPS = {
@@ -18,10 +21,15 @@ DEFAULT_METRIC_GROUPS = {
     ],
     "learner_stats": [
         "info/learner/default_policy/learner_stats/policy_loss",
+        "info/learner/default/learner_stats/policy_loss",
         "info/learner/default_policy/learner_stats/vf_loss",
+        "info/learner/default/learner_stats/vf_loss",
         "info/learner/default_policy/learner_stats/vf_explained_var",
+        "info/learner/default/learner_stats/vf_explained_var",
         "info/learner/default_policy/learner_stats/entropy",
+        "info/learner/default/learner_stats/entropy",
         "info/learner/default_policy/learner_stats/kl",
+        "info/learner/default/learner_stats/kl",
     ],
     "throughput_and_timing": [
         "timers/sample_time_ms",
@@ -89,7 +97,12 @@ def discover_progress_files(results_dir: Path, run_filters: Optional[Iterable[st
 def load_runs(progress_files: List[Path]) -> Dict[str, pd.DataFrame]:
     runs = {}
     for path in progress_files:
-        df = pd.read_csv(path)
+        if path.stat().st_size == 0:
+            continue
+        try:
+            df = pd.read_csv(path)
+        except EmptyDataError:
+            continue
         if df.empty:
             continue
         run_name = f"{path.parent.parent.name}/{path.parent.name}"
@@ -137,6 +150,18 @@ def plot_metric_group(
     usable_metrics = available_metrics(runs, metrics, x_axis)
     if not usable_metrics:
         return False
+
+    # Avoid plotting duplicate aliases for the same learner metric name.
+    seen_metric_suffixes = set()
+    deduped_metrics = []
+    for metric in usable_metrics:
+        normalized = metric.replace("info/learner/default_policy/", "info/learner/default/")
+        suffix = normalized.split("learner_stats/")[-1]
+        if suffix in seen_metric_suffixes:
+            continue
+        seen_metric_suffixes.add(suffix)
+        deduped_metrics.append(metric)
+    usable_metrics = deduped_metrics
 
     fig, axes = plt.subplots(
         len(usable_metrics),
