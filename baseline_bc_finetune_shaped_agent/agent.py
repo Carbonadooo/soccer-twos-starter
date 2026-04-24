@@ -10,10 +10,10 @@ from soccer_twos import AgentInterface
 from .model import PlayerPolicyNet
 
 
-class BaselineBCFinetuneAgent(AgentInterface):
+class BaselineBCFinetuneShapedAgent(AgentInterface):
     def __init__(self, env):
         super().__init__()
-        self.name = "BaselineBCFinetuneAgent"
+        self.name = "BaselineBCFinetuneShapedAgent"
         obs_size = int(env.observation_space.shape[0])
         action_logits_size = int(len(env.action_space.nvec) * env.action_space.nvec[0])
         self.model = PlayerPolicyNet(
@@ -38,7 +38,7 @@ class BaselineBCFinetuneAgent(AgentInterface):
     def _load_checkpoint(self):
         checkpoint_path = self._find_checkpoint()
         if checkpoint_path is None:
-            print("Finetune checkpoint not found. Agent will use random initial weights.")
+            print("Shaped finetune checkpoint not found. Agent will use random initial weights.")
             return
 
         with open(checkpoint_path, "rb") as checkpoint_file:
@@ -55,7 +55,6 @@ class BaselineBCFinetuneAgent(AgentInterface):
             self.model.logits.bias.data.copy_(torch.from_numpy(policy_state["logits.bias"]))
             return
 
-        # Fallback for RLlib default fcnet checkpoints if this package is reused.
         self.model.hidden1.weight.data.copy_(
             torch.from_numpy(policy_state["_hidden_layers.0._model.0.weight"])
         )
