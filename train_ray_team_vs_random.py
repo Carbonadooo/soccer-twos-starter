@@ -9,7 +9,7 @@ from soccer_twos import EnvType
 from utils import create_rllib_env
 
 
-NUM_ENVS_PER_WORKER = 2
+NUM_ENVS_PER_WORKER = 3
 
 
 if __name__ == "__main__":
@@ -30,10 +30,14 @@ if __name__ == "__main__":
         config={
             # system settings
             "num_gpus": 0,
-            "num_workers": 12,
+            "num_workers": 8,
             "num_envs_per_worker": NUM_ENVS_PER_WORKER,
             "log_level": "WARN",
             "framework": "torch",
+            "clip_param": 0.2,
+            "entropy_coeff": 0.001,
+            "num_sgd_iter": 10,
+            "sgd_minibatch_size": 256,
             # RL setup
             "env": "Soccer",
             "env_config": {

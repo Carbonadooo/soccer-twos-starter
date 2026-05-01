@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument("--num-envs-per-worker", type=int, default=NUM_ENVS_PER_WORKER)
     parser.add_argument("--rollout-fragment-length", type=int, default=500)
     parser.add_argument("--train-batch-size", type=int, default=8000)
-    parser.add_argument("--checkpoint-freq", type=int, default=20)
+    parser.add_argument("--checkpoint-freq", type=int, default=10)
     parser.add_argument("--bc-checkpoint", default=str(BC_CHECKPOINT_PATH))
     parser.add_argument("--restore-checkpoint", default=str(RESTORE_CHECKPOINT_PATH))
     parser.add_argument(
@@ -67,9 +67,9 @@ def parse_args():
     )
     parser.add_argument("--history-trial-dir", default=str(HISTORY_TRIAL_DIR))
     parser.add_argument("--num-history-opponents", type=int, default=6)
-    parser.add_argument("--baseline-prob", type=float, default=0.5)
+    parser.add_argument("--baseline-prob", type=float, default=0.6)
     parser.add_argument("--history-prob", type=float, default=0.3)
-    parser.add_argument("--random-prob", type=float, default=0.2)
+    parser.add_argument("--random-prob", type=float, default=0.1)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--clip-param", type=float, default=0.1)
     parser.add_argument(
@@ -521,7 +521,6 @@ if __name__ == "__main__":
             "framework": "torch",
             "lr": args.lr,
             "clip_param": args.clip_param,
-            "entropy_coeff": 0.001,
             "multiagent": {
                 "policies": {
                     "default": (None, obs_space, act_space, {}),
