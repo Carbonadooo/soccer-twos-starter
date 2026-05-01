@@ -2,7 +2,6 @@ import os
 import pickle
 from argparse import ArgumentParser
 from pathlib import Path
-from datetime import datetime
 
 import gym
 import numpy as np
@@ -27,7 +26,7 @@ import soccer_twos
 
 
 NUM_ENVS_PER_WORKER = 2
-BC_CHECKPOINT_PATH = Path("bc_obs_0/checkpoint.pth")
+BC_CHECKPOINT_PATH = Path("bc_agent/checkpoint.pth")
 BASELINE_CHECKPOINT_PATH = Path(
     "ceia_baseline_agent"
     "/ray_results/PPO_selfplay_twos/PPO_Soccer_f475e_00000_0_2021-09-19_15-54-02"
@@ -38,21 +37,6 @@ PREDICTION_HORIZON = 0.25
 GOAL_Z = 0.0
 OWN_GOAL = np.asarray([-FIELD_HALF_LENGTH, GOAL_Z], dtype=np.float32)
 OPP_GOAL = np.asarray([FIELD_HALF_LENGTH, GOAL_Z], dtype=np.float32)
-
-
-def default_experiment_name(args) -> str:
-    bc_stem = Path(args.bc_checkpoint).resolve().parent.name
-    lr_tag = f"{args.lr:.0e}".replace("-", "m")
-    clip_tag = str(args.clip_param).replace(".", "p")
-    ts_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return (
-        f"PPO_bc_finetune_vs_baseline_shaped"
-        f"__bc_{bc_stem}"
-        f"__lr_{lr_tag}"
-        f"__clip_{clip_tag}"
-        f"__ts_{args.timesteps_total}"
-        f"__{ts_tag}"
-    )
 
 
 def parse_args():
@@ -70,9 +54,8 @@ def parse_args():
     parser.add_argument("--clip-param", type=float, default=0.1)
     parser.add_argument(
         "--experiment-name",
-        default=None,
+        default="PPO_bc_finetune_vs_baseline_shaped_lr2e5_clip01_3p6M",
     )
-    parser.add_argument("--results-dir", default="./ray_results")
     return parser.parse_args()
 
 
@@ -272,31 +255,16 @@ class BlueTeamVsBaselineShapedEnv(MultiAgentEnv):
         self.baseline_actor = TorchPolicyActor(load_baseline_model())
         self.shaping = BaselineShapingHelper()
 
-        # Load obs normalisation stats from bc_obs_0 checkpoint
-        bc_path = Path(env_config.get("bc_checkpoint_path", str(BC_CHECKPOINT_PATH)))
-        if bc_path.exists():
-            bc_data = torch.load(bc_path, map_location="cpu")
-            self.obs_mean = bc_data.get("obs_mean", None)
-            self.obs_std  = bc_data.get("obs_std",  None)
-        else:
-            self.obs_mean = self.obs_std = None
-
-    def _norm(self, obs: np.ndarray) -> np.ndarray:
-        if self.obs_mean is not None:
-            return (obs - self.obs_mean) / self.obs_std
-        return obs
-
     def reset(self):
         self.shaping.reset()
         self.last_obs = self.base_env.reset()
-        return {0: self._norm(self.last_obs[0]), 1: self._norm(self.last_obs[1])}
+        return {0: self.last_obs[0], 1: self.last_obs[1]}
 
     def step(self, action_dict):
         env_actions = {
             0: action_dict[0],
             1: action_dict[1],
         }
-        # Baseline receives raw (unnormalised) obs — it was trained on raw obs
         orange_obs = {2: self.last_obs[2], 3: self.last_obs[3]}
         env_actions.update(self.baseline_actor.act(orange_obs))
 
@@ -304,7 +272,7 @@ class BlueTeamVsBaselineShapedEnv(MultiAgentEnv):
         self.last_obs = obs
         shaped = self.shaping.shape_rewards(info)
         return (
-            {0: self._norm(obs[0]), 1: self._norm(obs[1])},
+            {0: obs[0], 1: obs[1]},
             {
                 0: reward[0] + shaped.get(0, 0.0),
                 1: reward[1] + shaped.get(1, 0.0),
@@ -322,27 +290,26 @@ class BCInitPlayerModel(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
-        # Match bc_obs_0 architecture: [512, 512]
-        self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), 512)
-        self.hidden2 = nn.Linear(512, 512)
-        self.logits = nn.Linear(512, num_outputs)
-        self.value_branch = nn.Linear(512, 1)
+        hidden_size = 512
+        self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), hidden_size)
+        self.hidden2 = nn.Linear(hidden_size, hidden_size)
+        self.logits = nn.Linear(hidden_size, num_outputs)
+        self.value_branch = nn.Linear(hidden_size, 1)
         self._value_out = None
 
         bc_path = model_config.get("custom_model_config", {}).get("bc_checkpoint_path")
         if bc_path and Path(bc_path).exists():
             payload = torch.load(bc_path, map_location="cpu")
-            sd = payload["state_dict"]   # bc_obs_0 format
-            # Map bc_obs_0 keys → model keys
-            self.hidden1.weight.data.copy_(sd["shared.0.weight"])
-            self.hidden1.bias.data.copy_(sd["shared.0.bias"])
-            self.hidden2.weight.data.copy_(sd["shared.2.weight"])
-            self.hidden2.bias.data.copy_(sd["shared.2.bias"])
-            # Concatenate 3 branch heads → single logits layer [9, 512]
-            logit_w = torch.cat([sd["heads.0.weight"], sd["heads.1.weight"], sd["heads.2.weight"]], dim=0)
-            logit_b = torch.cat([sd["heads.0.bias"],   sd["heads.1.bias"],   sd["heads.2.bias"]],   dim=0)
-            self.logits.weight.data.copy_(logit_w)
-            self.logits.bias.data.copy_(logit_b)
+            state_dict = payload["state_dict"] if "state_dict" in payload else payload
+            self.hidden1.weight.data.copy_(state_dict["shared.0.weight"])
+            self.hidden1.bias.data.copy_(state_dict["shared.0.bias"])
+            self.hidden2.weight.data.copy_(state_dict["shared.2.weight"])
+            self.hidden2.bias.data.copy_(state_dict["shared.2.bias"])
+
+            head_weights = [state_dict[f"heads.{branch_idx}.weight"] for branch_idx in range(3)]
+            head_biases = [state_dict[f"heads.{branch_idx}.bias"] for branch_idx in range(3)]
+            self.logits.weight.data.copy_(torch.cat(head_weights, dim=0))
+            self.logits.bias.data.copy_(torch.cat(head_biases, dim=0))
 
     def forward(self, input_dict, state, seq_lens):
         x = input_dict["obs_flat"].float()
@@ -372,8 +339,6 @@ def create_env(env_config=None):
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.experiment_name is None:
-        args.experiment_name = default_experiment_name(args)
     project_dir = os.path.dirname(os.path.abspath(__file__))
     os.environ["PYTHONPATH"] = os.pathsep.join(
         [project_dir, os.environ.get("PYTHONPATH", "")]
@@ -422,7 +387,6 @@ if __name__ == "__main__":
             "env": "BlueTeamVsBaselineShaped",
             "env_config": {
                 "num_envs_per_worker": args.num_envs_per_worker,
-                "bc_checkpoint_path": str(Path(args.bc_checkpoint).resolve()),
             },
             "model": {
                 "custom_model": "bc_init_player_model",
@@ -438,7 +402,7 @@ if __name__ == "__main__":
         },
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_at_end=True,
-        local_dir=args.results_dir,
+        local_dir="./ray_results",
         callbacks=[CSVLoggerCallback(), JsonLoggerCallback()],
     )
 
