@@ -2,6 +2,7 @@ import os
 import pickle
 from argparse import ArgumentParser
 from pathlib import Path
+from datetime import datetime
 
 import gym
 import numpy as np
@@ -26,21 +27,32 @@ import soccer_twos
 
 
 NUM_ENVS_PER_WORKER = 2
-<<<<<<< HEAD
 BC_CHECKPOINT_PATH = Path("bc_obs_0/checkpoint.pth")
-=======
-BC_CHECKPOINT_PATH = Path("bc_agent/checkpoint.pth")
 BASELINE_CHECKPOINT_PATH = Path(
     "ceia_baseline_agent"
     "/ray_results/PPO_selfplay_twos/PPO_Soccer_f475e_00000_0_2021-09-19_15-54-02"
     "/checkpoint_002449/checkpoint-2449"
 )
->>>>>>> ba1dfc1e225cc4bf326bd32808d3bcf1b0e72f52
 FIELD_HALF_LENGTH = 14.0
 PREDICTION_HORIZON = 0.25
 GOAL_Z = 0.0
 OWN_GOAL = np.asarray([-FIELD_HALF_LENGTH, GOAL_Z], dtype=np.float32)
 OPP_GOAL = np.asarray([FIELD_HALF_LENGTH, GOAL_Z], dtype=np.float32)
+
+
+def default_experiment_name(args) -> str:
+    bc_stem = Path(args.bc_checkpoint).resolve().parent.name
+    lr_tag = f"{args.lr:.0e}".replace("-", "m")
+    clip_tag = str(args.clip_param).replace(".", "p")
+    ts_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return (
+        f"PPO_bc_finetune_vs_baseline_shaped"
+        f"__bc_{bc_stem}"
+        f"__lr_{lr_tag}"
+        f"__clip_{clip_tag}"
+        f"__ts_{args.timesteps_total}"
+        f"__{ts_tag}"
+    )
 
 
 def parse_args():
@@ -58,8 +70,9 @@ def parse_args():
     parser.add_argument("--clip-param", type=float, default=0.1)
     parser.add_argument(
         "--experiment-name",
-        default="PPO_bc_finetune_vs_baseline_shaped_lr2e5_clip01_3p6M",
+        default=None,
     )
+    parser.add_argument("--results-dir", default="./ray_results")
     return parser.parse_args()
 
 
@@ -309,25 +322,16 @@ class BCInitPlayerModel(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
-<<<<<<< HEAD
         # Match bc_obs_0 architecture: [512, 512]
         self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), 512)
         self.hidden2 = nn.Linear(512, 512)
         self.logits = nn.Linear(512, num_outputs)
         self.value_branch = nn.Linear(512, 1)
-=======
-        hidden_size = 512
-        self.hidden1 = nn.Linear(int(np.product(obs_space.shape)), hidden_size)
-        self.hidden2 = nn.Linear(hidden_size, hidden_size)
-        self.logits = nn.Linear(hidden_size, num_outputs)
-        self.value_branch = nn.Linear(hidden_size, 1)
->>>>>>> ba1dfc1e225cc4bf326bd32808d3bcf1b0e72f52
         self._value_out = None
 
         bc_path = model_config.get("custom_model_config", {}).get("bc_checkpoint_path")
         if bc_path and Path(bc_path).exists():
             payload = torch.load(bc_path, map_location="cpu")
-<<<<<<< HEAD
             sd = payload["state_dict"]   # bc_obs_0 format
             # Map bc_obs_0 keys → model keys
             self.hidden1.weight.data.copy_(sd["shared.0.weight"])
@@ -339,19 +343,6 @@ class BCInitPlayerModel(TorchModelV2, nn.Module):
             logit_b = torch.cat([sd["heads.0.bias"],   sd["heads.1.bias"],   sd["heads.2.bias"]],   dim=0)
             self.logits.weight.data.copy_(logit_w)
             self.logits.bias.data.copy_(logit_b)
-=======
-            state_dict = payload["state_dict"] if "state_dict" in payload else payload
-            self.hidden1.weight.data.copy_(state_dict["shared.0.weight"])
-            self.hidden1.bias.data.copy_(state_dict["shared.0.bias"])
-            self.hidden2.weight.data.copy_(state_dict["shared.2.weight"])
-            self.hidden2.bias.data.copy_(state_dict["shared.2.bias"])
-
-            # Convert three 512->3 branch heads into a single 512->9 logits layer.
-            head_weights = [state_dict[f"heads.{branch_idx}.weight"] for branch_idx in range(3)]
-            head_biases = [state_dict[f"heads.{branch_idx}.bias"] for branch_idx in range(3)]
-            self.logits.weight.data.copy_(torch.cat(head_weights, dim=0))
-            self.logits.bias.data.copy_(torch.cat(head_biases, dim=0))
->>>>>>> ba1dfc1e225cc4bf326bd32808d3bcf1b0e72f52
 
     def forward(self, input_dict, state, seq_lens):
         x = input_dict["obs_flat"].float()
@@ -381,6 +372,8 @@ def create_env(env_config=None):
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.experiment_name is None:
+        args.experiment_name = default_experiment_name(args)
     project_dir = os.path.dirname(os.path.abspath(__file__))
     os.environ["PYTHONPATH"] = os.pathsep.join(
         [project_dir, os.environ.get("PYTHONPATH", "")]
@@ -445,7 +438,7 @@ if __name__ == "__main__":
         },
         checkpoint_freq=args.checkpoint_freq,
         checkpoint_at_end=True,
-        local_dir="./ray_results",
+        local_dir=args.results_dir,
         callbacks=[CSVLoggerCallback(), JsonLoggerCallback()],
     )
 
