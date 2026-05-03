@@ -1,0 +1,2 @@
+run,timesteps_total,time_total_s,episode_reward_mean,episode_reward_max,episode_reward_min,episode_len_mean,timers/sample_time_ms,timers/learn_time_ms,timers/sample_throughput,timers/learn_throughput
+PPO_bc_finetune_vs_baseline_shaped_lr2e5_clip01_3p6M/PPO_BlueTeamVsBaselineShaped_06a1c_00000_0_2026-04-24_02-58-40,7200000,27364.845694303516,0.9078592787867156,2.263603642377568,-2.338424081471408,50.1,6672.5,25895.465,1198.951,308.934

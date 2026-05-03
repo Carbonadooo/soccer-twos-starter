@@ -2,7 +2,6 @@ envs/
 ray_results/
 ceia_baseline_agent/
 data/
-results_analysis/
 bc_data/
 bc_results/
 

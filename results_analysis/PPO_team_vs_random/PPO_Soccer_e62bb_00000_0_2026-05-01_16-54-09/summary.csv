@@ -1,0 +1,2 @@
+run,timesteps_total,time_total_s,episode_reward_mean,episode_reward_max,episode_reward_min,episode_len_mean,timers/sample_time_ms,timers/learn_time_ms,timers/sample_throughput,timers/learn_throughput
+PPO_team_vs_random/PPO_Soccer_e62bb_00000_0_2026-05-01_16-54-09,3600000,4574.061140537262,1.719911999553442,1.968000054359436,-2.0,103.48,8961.292,6221.911,1339.093,1928.668
