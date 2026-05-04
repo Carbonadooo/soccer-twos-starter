@@ -9,22 +9,15 @@
 \usepackage{graphicx}
 \usepackage{subcaption}
 
-\title{Overcoming Sparse Rewards in Multi-Agent Soccer via\\
-Imitation Learning and Potential-Based Reward Shaping}
+\title{Training SoccerTwos Agents with PPO,\\
+Behavioral Cloning, and Reward Shaping}
 
 \author{
-  % TODO: fill in team member names and emails
-  Author One \\
+  Shaoyu \\
   Georgia Institute of Technology \\
-  \texttt{author1@gatech.edu} \\
   \And
-  Author Two \\
+  Haoran \\
   Georgia Institute of Technology \\
-  \texttt{author2@gatech.edu} \\
-  \And
-  Author Three \\
-  Georgia Institute of Technology \\
-  \texttt{author3@gatech.edu} \\
 }
 
 \begin{document}
@@ -33,19 +26,28 @@ Imitation Learning and Potential-Based Reward Shaping}
 %===============================================================================
 
 \begin{abstract}
-We study the challenge of training competitive agents in SoccerTwos, a physics-based
-2-vs-2 soccer environment with sparse rewards.
-Vanilla PPO trained from random initialization fails to converge because goals are rare
-events, providing almost no gradient signal.
-We address this by first distilling a pre-trained baseline agent into a behavioral
-cloning (BC) policy via supervised learning on 33k expert transitions, achieving 98\%
-action-matching accuracy.
-We then fine-tune this BC policy with PPO against the baseline, augmenting the sparse
-goal reward with potential-based shaping terms that encourage ball progress, defensive
-coverage, and support positioning.
-Our final agent achieves a win rate of \textbf{[X]\%} against the baseline and
-\textbf{[Y]\%} against a random agent across 50 evaluation episodes, compared to
-near-zero for vanilla PPO and [Z]\% for the BC-only agent.
+We study three progressively stronger agent-construction strategies for the
+SoccerTwos 2-vs-2 environment: direct PPO from scratch, behavioral cloning (BC)
+from a provided baseline agent, and BC-initialized PPO fine-tuning with reward
+shaping against that baseline.
+Our first logged PPO baseline, trained with
+\texttt{train\_ray\_team\_vs\_random.py} against a random opponent in
+\texttt{team\_vs\_policy} mode, reaches an episode reward mean of 1.72 after
+3.6M timesteps.
+Our strongest logged fine-tuning run, produced by
+\texttt{train\_ray\_bc\_finetune\_vs\_baseline\_shaped.py}, reaches a peak
+episode reward mean of 1.28 at 5.04M timesteps and finishes at 0.91 after 7.2M
+timesteps while training against the significantly stronger
+\texttt{ceia\_baseline\_agent}.
+The behavioral cloning stage provides the initialization that makes this harder
+fine-tuning setting practical, while shaped rewards improve learning signal over
+the sparse goal-only objective.
+In a 200-episode head-to-head evaluation against
+\texttt{baseline\_teacher\_agent}, Agent~1 wins 31 games (15.5\%) while
+Agent~3 wins 136 games (68.0\%).
+Because the repository does not contain preserved BC-only training logs or
+standardized evaluation records for Agent~2, we leave explicit placeholders for
+that stage rather than inserting unsupported numbers.
 \end{abstract}
 
 \keywords{Multi-Agent Reinforcement Learning, Imitation Learning, Reward Shaping,
@@ -55,117 +57,131 @@ Proximal Policy Optimization}
 
 \section{Overview}
 
-SoccerTwos provides a physics-based 2-vs-2 soccer match in a walled arena.
-Each agent receives a 336-dimensional observation composed of ray-cast sensor readings,
-its own velocity and rotation, and relative positions of the ball and both goals.
-Actions are discrete (MultiDiscrete $[3,3,3]$), controlling forward/backward movement,
-lateral movement, and rotation.
-The environment provides only a sparse reward of $+1$ for scoring and $-1$ for
-conceding a goal.
-We explore three training strategies of increasing complexity: (1)~vanilla PPO from
-random initialization, (2)~behavioral cloning (BC) from an expert baseline, and
-(3)~PPO fine-tuning of the BC policy with a modified observation space and
-potential-based reward shaping.
-Our hypothesis is that bootstrapping from imitation learning bypasses the sparse-reward
-exploration bottleneck, and that shaped rewards provide dense learning signal that
-guides the policy toward tactically sound behavior without distorting the optimal
-policy~\citep{ng1999policy}.
+SoccerTwos is a physics-based 2-vs-2 soccer environment in which each player
+receives a 336-dimensional observation and outputs a branched discrete action.
+The default task reward is sparse: scoring yields $+1$ and conceding yields
+$-1$.
+This makes exploration difficult, especially when policies start from random
+initialization.
+To study practical ways around this problem, we organized our experiments into
+three agents.
+Agent~1 uses PPO trained directly in a relatively easy setting against a random
+team.
+Agent~2 uses behavioral cloning to imitate the provided
+\texttt{ceia\_baseline\_agent}.
+Agent~3 starts from BC-derived weights and then fine-tunes with PPO against the
+baseline while adding dense reward shaping terms.
+The first and third agents have preserved Ray training logs in the repository,
+which makes them the focus of our quantitative analysis.
 
 %===============================================================================
 
 \section{Method}
 
-\subsection{Agent 1 -- Vanilla PPO}
+\subsection{Agent 1 -- PPO Against a Random Opponent}
 
-As a baseline, we train directly with Proximal Policy Optimization
-(PPO)~\citep{schulman2017proximal} using Ray RLLib~\citep{liang2018rllib}.
-The agent controls two players in \texttt{team\_vs\_policy} mode against a random
-opponent.
-PPO maximises the clipped surrogate objective:
+Our first reported baseline is trained by
+\texttt{train\_ray\_team\_vs\_random.py} using PPO~\citep{schulman2017proximal}
+in Ray RLlib~\citep{liang2018rllib}.
+The environment is configured as \texttt{team\_vs\_policy} with
+\texttt{multiagent=False}, so one policy jointly controls both teammates.
+No explicit opponent policy is passed; under the project wrapper in
+\texttt{utils.py}, this means the environment uses its default random opponent.
+
+The PPO objective is the standard clipped surrogate:
 \begin{equation}
   L^{\text{CLIP}}(\theta) =
     \mathbb{E}_t\!\left[
       \min\!\left(r_t(\theta)\hat{A}_t,\;
-             \text{clip}(r_t(\theta), 1{-}\epsilon, 1{+}\epsilon)\hat{A}_t
+      \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t
       \right)
     \right],
 \end{equation}
-where $r_t(\theta) = \pi_\theta(a_t|s_t)/\pi_{\theta_\text{old}}(a_t|s_t)$ and
-$\epsilon=0.3$ by default.
-With sparse goal rewards and random exploration, the agent scores roughly once per
-600-step episode in early training, making the advantage estimates near zero and
-preventing meaningful policy improvement.
+where $r_t(\theta) =
+\pi_\theta(a_t \mid s_t)/\pi_{\theta_{\text{old}}}(a_t \mid s_t)$.
+In our logged run, the policy uses two fully connected hidden layers of size
+512 and is trained on CPU with 8 workers and 3 vectorized environments per
+worker.
 
-\subsection{Agent 2 -- Behavioral Cloning (BC)}
+\subsection{Agent 2 -- Behavioral Cloning from the Baseline Agent}
 
-To bypass the exploration bottleneck, we apply imitation learning.
-We collect 300 episodes ($\approx$33k transitions) by running the pre-trained
-\texttt{ceia\_baseline\_agent} against itself, recording each player's
-$(s_t, a_t)$ pair.
-We train a two-hidden-layer MLP with three classification heads (one per action
-branch) by minimising the cross-entropy loss:
+The BC agent is produced by the repository's observation-normalized distillation
+pipeline in \texttt{distill\_bc\_obs.py}, and packaged in
+\texttt{baseline\_bc\_agent/}.
+This stage is supervised imitation learning rather than reinforcement learning.
+The script collects 300 episodes of expert data from the provided
+\texttt{ceia\_baseline\_agent}, computes per-dimension observation mean and
+standard deviation, normalizes each observation with
 \begin{equation}
-  \mathcal{L}_{\text{BC}}(\theta) =
-    -\sum_{i=1}^{3}\sum_{c=0}^{2}
-    \mathbf{1}[a_{i}^{*}=c]\,\log\pi_\theta(a_i{=}c \mid s).
+  \tilde{s}_d = \frac{s_d - \mu_d}{\sigma_d + 10^{-8}},
 \end{equation}
+and trains a two-layer MLP with three action heads using cross-entropy loss.
 
-\paragraph{Observation modification.}
-The raw 336-dim observation mixes features of different scales (ray-cast fractions
-$\in[0,1]$, velocities $\in[-10,10]$).
-We apply per-dimension z-score normalization using statistics
-$(\mu_d, \sigma_d)$ computed from the collected dataset:
-\begin{equation}
-  \tilde{s}_d = \frac{s_d - \mu_d}{\sigma_d + \varepsilon}, \quad \varepsilon=10^{-8}.
-\end{equation}
-This maps all features to approximately zero-mean unit-variance, reducing gradient
-variance and stabilising the supervised training~\citep{andrychowicz2021matters}.
-The same normalisation is applied at inference time using the stored statistics.
+This observation normalization is a meaningful design choice because the raw
+336-dimensional observation mixes features on different scales, such as ray-cast
+fractions and physical velocities.
+The trained BC checkpoint is saved to \texttt{bc\_obs\_0/checkpoint.pth} and can
+be loaded directly by the packaged inference agent.
 
-\subsection{Agent 3 -- BC + PPO Fine-Tuning + Reward Shaping}
+\paragraph{Placeholder for teammate-owned details.}
+The final report should later add the exact dataset size, training loss curve,
+action-matching accuracy, and evaluation notes for Agent~2 from the teammate's
+original logs.
+At the moment, those run records are not preserved in the repository, so we keep
+explicit placeholders rather than inserting unsupported values.
 
-Starting from the BC weights, we fine-tune with PPO against the baseline agent.
-The blue/orange team assignment is randomised at the start of each episode to prevent
-directional bias.
-We augment the sparse goal reward $r^{\text{goal}} \in \{-1, 0, +1\}$ with a shaped
-component $r^{\text{shaped}}_t$, scaled by a global factor $\alpha = 0.15$ to keep
-the cumulative shaped reward well below the task reward:
-\begin{equation}
-  r_t = r^{\text{goal}}_t + \alpha \cdot r^{\text{shaped}}_t.
-\end{equation}
+\subsection{Agent 3 -- BC-Initialized PPO with Reward Shaping}
 
-\paragraph{Reward modification.}
-The shaped reward $r^{\text{shaped}}_t$ consists of five components:
+Our final reported fine-tuning experiment corresponds to the logged run
+\texttt{PPO\_bc\_finetune\_vs\_baseline\_shaped\_lr2e5\_clip01\_3p6M}, which is
+produced by
+\texttt{train\_ray\_bc\_finetune\_vs\_baseline\_shaped.py}.
+This is important: although the repository also contains a simpler exploratory
+\texttt{train\_reward\_shaping.py}, the preserved result analyzed in this report
+comes from the baseline-vs-shaped fine-tuning script, not that earlier
+exploration.
 
+In this setup, the learning policy controls the blue team in a
+\texttt{multiagent\_player} environment, while the opponent is the fixed
+\texttt{ceia\_baseline\_agent}.
+The PPO model is initialized from a BC checkpoint
+(\texttt{bc\_agent/checkpoint.pth}) by copying the shared hidden layers and
+concatenating the three BC action heads into the single RLlib logits layer.
+This gives PPO a non-random starting policy before any policy-gradient update.
+
+\paragraph{Reward shaping.}
+The shaped environment adds dense terms to the sparse per-goal reward.
+The implementation in
+\texttt{train\_ray\_bc\_finetune\_vs\_baseline\_shaped.py} includes:
 \begin{enumerate}
-  \item \textbf{Ball progress (potential-based).}
-    Using predicted ball position
-    $\hat{x} = x_{\text{ball}} + \Delta t \cdot v_x$ ($\Delta t = 0.25$~s),
-    we define the potential $\Phi = \hat{x}/14$ and reward the increment:
-    $r^{\text{prog}} = 0.02\,(\Phi_t - \Phi_{t-1})$.
-    This satisfies the potential-based shaping condition~\citep{ng1999policy},
-    preserving the optimal policy.
-
-  \item \textbf{Shooting signal.}
-    When the nearest player is within 3 units of the ball and the ball is in the
-    opponent's half, we reward positive ball velocity toward the opponent goal:
-    $r^{\text{shoot}} = 0.006 \cdot \max(0, v_x / 10)$.
-
+  \item \textbf{Ball-progress potential.}
+    The script predicts the future ball position using the current velocity and
+    rewards the increase in normalized forward ball position:
+    \[
+      r^{\text{prog}} = 0.02\left(\Phi_t - \Phi_{t-1}\right), \quad
+      \Phi_t = \hat{x}_t / 14.
+    \]
+    This is the component most closely aligned with potential-based shaping
+    theory~\citep{ng1999policy}.
+  \item \textbf{Ball-contest reward.}
+    The player nearest to the predicted ball position receives a small positive
+    bonus based on an exponential distance decay.
   \item \textbf{Defensive coverage.}
-    When the ball is in our half, we reward having at least one player positioned
-    between the ball and our own goal and within 2.5 units laterally of the ball:
-    $r^{\text{cover}} = 0.004 \cdot \mathbf{1}[\text{defender between ball and goal}]$.
-
+    When the ball is in the team's own half, the team receives a bonus if at
+    least one defender is positioned between the ball and the home goal along the
+    ball lane, and a small penalty otherwise.
   \item \textbf{Support positioning.}
-    In the attacking phase, the non-nearest (support) player is rewarded for
-    positioning 0.5--5 units behind the ball with $\approx$2.5 units of lateral
-    separation, encouraging passing lanes.
-    In the defensive phase, the support player is rewarded for covering the goal lane.
-
-  \item \textbf{Anti-crowding penalty.}
-    When both teammates are within 3 units of each other, a penalty proportional to
-    $(3 - \text{dist})/3$ discourages collapsing onto the same point.
+    The non-nearest teammate is rewarded for maintaining width and depth behind
+    the ball in attack, or for covering the goal lane in defense.
+  \item \textbf{Anti-crowding and lateral-separation terms.}
+    A penalty discourages both teammates from collapsing to the same point, while
+    a small bonus rewards useful lateral spacing.
 \end{enumerate}
+
+Unlike a later experimental branch in the repository, this specific logged run
+does \emph{not} randomize team side each episode and does \emph{not} apply a
+global shaping scale factor such as $\alpha=0.15$.
+Those details therefore should not be attributed to the result analyzed here.
 
 %===============================================================================
 
@@ -173,83 +189,135 @@ The shaped reward $r^{\text{shaped}}_t$ consists of five components:
 
 \subsection{Training Setup}
 
-All experiments use Ray RLLib 1.4 with PyTorch on CPU.
-Table~\ref{tab:hparams} lists the hyperparameters for Agent 3 (the final fine-tuning
-run). Agents 1 and 2 use default PPO settings and supervised learning respectively.
+All preserved runs were trained with Ray RLlib 1.4 and PyTorch on CPU.
+Table~\ref{tab:run_configs} summarizes the two experiments for which the
+repository contains complete Ray logs and progress curves.
 
 \begin{table}[h]
 \centering
-\caption{Hyperparameters for Agent 3 (BC + PPO + Reward Shaping).}
-\label{tab:hparams}
-\begin{tabular}{lc}
+\caption{Logged training configurations analyzed in this report.}
+\label{tab:run_configs}
+\begin{tabular}{lcc}
 \toprule
-\textbf{Parameter} & \textbf{Value} \\
+\textbf{Parameter} & \textbf{Agent 1} & \textbf{Agent 3} \\
 \midrule
-Algorithm          & PPO \\
-Library            & Ray RLLib 1.4 \\
-Learning Rate      & $3 \times 10^{-5}$ \\
-Clip Param ($\varepsilon$) & 0.1 \\
-Train Batch Size   & 8000 \\
-SGD Minibatch Size & 512 \\
-SGD Iterations     & 15 \\
-Discount $\gamma$  & 0.99 \\
-GAE $\lambda$      & 0.95 \\
-Entropy Coefficient & 0.01 \\
-VF Loss Coefficient & 0.5 \\
-Hidden Layers      & [512, 512] \\
-BC Training Episodes & 300 \\
-BC Training Epochs & 50 \\
-Shaping Scale $\alpha$ & 0.15 \\
+Training script & \texttt{train\_ray\_team\_vs\_random.py} & \texttt{train\_ray\_bc\_finetune\_vs\_baseline\_shaped.py} \\
+Algorithm & PPO & PPO \\
+Opponent & Random policy & \texttt{ceia\_baseline\_agent} \\
+Environment & \texttt{team\_vs\_policy} & \texttt{BlueTeamVsBaselineShaped} \\
+Framework & Torch & Torch \\
+Workers & 8 & 8 \\
+Envs per worker & 3 & 2 \\
+Rollout fragment length & 500 & 500 \\
+Train batch size & 12000 & 8000 \\
+Learning rate & RLlib default & $2\times 10^{-5}$ \\
+Clip parameter & 0.2 & 0.1 \\
+Entropy coefficient & 0.001 & RLlib default \\
+SGD minibatch size & 256 & RLlib default \\
+SGD iterations & 10 & RLlib default \\
+Discount $\gamma$ & RLlib default & 0.98 \\
+Hidden layers & [512, 512] & [512, 512] \\
+Stop criterion & 3.6M timesteps & 7.2M timesteps \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training-Curve Summary}
+
+Table~\ref{tab:curve_summary} summarizes the final and best reward values from
+the logged training curves.
+The reward values should not be compared naively across Agent~1 and Agent~3,
+because the two runs are trained against opponents of very different strength and
+in different environment wrappers.
+Instead, we use them to describe within-run learning progress.
+
+\begin{table}[h]
+\centering
+\caption{Summary statistics from preserved Ray logs.}
+\label{tab:curve_summary}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Run} & \textbf{Total Timesteps} & \textbf{Best Reward Mean} & \textbf{Final Reward Mean} & \textbf{Final Episode Length} \\
+\midrule
+Agent 1: PPO vs random & 3.6M & 1.720 @ 3.6M & 1.720 & 103.48 \\
+Agent 3: BC + PPO + shaping & 7.2M & 1.278 @ 5.04M & 0.908 & 50.10 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Training Curves}
 
-Figure~\ref{fig:training_curves} shows episode reward mean vs.\ total timesteps for
-Agent~1 and Agent~3.
-Agent~2 (BC) is a supervised learning procedure; its training loss curve is shown
-separately in Figure~\ref{fig:bc_loss}.
-Agent~1 remains near zero reward throughout training, confirming that sparse rewards
-alone are insufficient for learning from scratch.
-Agent~3 shows a consistent upward trend starting from the BC initialisation, reaching
-a mean reward of approximately [X] after [Y]M timesteps.
+Figure~\ref{fig:agent_curves} shows the reward curves exported by
+\texttt{analyze\_ray\_results.py} for the two runs with complete logs.
+Agent~1 improves steadily throughout training and reaches its best value at the
+final checkpoint.
+Agent~3 also improves substantially from its initial policy, but unlike Agent~1,
+its curve peaks in mid training and then regresses somewhat by the end of the
+run, indicating that checkpoint selection matters.
 
 \begin{figure}[h]
   \centering
-  % TODO: replace with actual plot from analyze_ray_results.py
-  % python analyze_ray_results.py --results-dir ray_results --output-dir results_analysis
-  \includegraphics[width=0.85\linewidth]{figures/training_curves.png}
-  \caption{Episode reward mean (smoothed, window=10) vs.\ total environment timesteps.
-           Agent~1 (Vanilla PPO) fails to improve over the sparse-reward baseline.
-           Agent~3 (BC + PPO + Shaping) steadily improves from the BC initialisation.}
-  \label{fig:training_curves}
+  \begin{subfigure}{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{results_analysis/PPO_team_vs_random/PPO_Soccer_e62bb_00000_0_2026-05-01_16-54-09/reward_curves.png}
+    \caption{Agent 1: PPO vs random}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{results_analysis/PPO_bc_finetune_vs_baseline_shaped_lr2e5_clip01_3p6M/PPO_BlueTeamVsBaselineShaped_06a1c_00000_0_2026-04-24_02-58-40/reward_curves.png}
+    \caption{Agent 3: BC + PPO + shaping}
+  \end{subfigure}
+  \caption{Reward curves for the two preserved Ray runs. These are training-time
+  episode reward means in their respective environments, not directly comparable
+  absolute measures of playing strength.}
+  \label{fig:agent_curves}
 \end{figure}
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=0.55\linewidth]{figures/bc_loss.png}
-  \caption{BC training cross-entropy loss and per-branch action accuracy vs.\ epoch.
-           All three action branches converge to $\approx$98\% accuracy by epoch 50.}
-  \label{fig:bc_loss}
+  \fbox{\parbox[c][0.24\textheight][c]{0.82\linewidth}{\centering
+  Placeholder for Agent~2 BC training plot\\
+  (for example, training loss, branch accuracy, or imitation-learning summary).}}
+  \caption{Placeholder figure for Agent~2. Replace this box with the teammate's
+  preserved BC training visualization once that artifact is available.}
+  \label{fig:agent2_placeholder}
 \end{figure}
 
-\subsection{Win Rate Comparison}
+\subsection{What Is Missing from the Artifact Record}
 
-Table~\ref{tab:winrate} reports the win rate of each agent over 50 episodes against
-a random agent and the pre-trained baseline.
+The repository does not currently contain:
+\begin{itemize}
+  \item the original BC training loss or accuracy logs for Agent~2,
+  \item a preserved Ray-style reward curve for the BC stage,
+  \item a standardized set of 50-episode evaluation win rates for all three
+    agents under a shared evaluation protocol.
+\end{itemize}
+For that reason, we do not report fabricated win-rate numbers.
+Instead, we anchor the report in the artifacts that can be reproduced directly
+from the current repository: training scripts, saved checkpoints, and
+\texttt{progress.csv}-derived curves.
+
+\subsection{Evaluation Against the Baseline Teacher}
+
+We additionally ran direct evaluations against
+\texttt{baseline\_teacher\_agent} using the command
+\texttt{python -m soccer\_twos.evaluate -m1 <agent> -m2 baseline\_teacher\_agent -e 20}.
+These evaluations use 200 episodes each, which makes them substantially more
+stable than our earlier quick checks, though they still reflect only the exact
+packaged checkpoints tested here.
 
 \begin{table}[h]
 \centering
-\caption{Win rate (wins / 50 episodes) for each agent.}
-\label{tab:winrate}
+\caption{Head-to-head evaluation against \texttt{baseline\_teacher\_agent}.}
+\label{tab:baseline_eval}
 \begin{tabular}{lcc}
 \toprule
-\textbf{Agent} & \textbf{vs.\ Random Agent} & \textbf{vs.\ Baseline Agent} \\
+\textbf{Agent} & \textbf{Wins / 200} & \textbf{Win Rate} \\
 \midrule
-Agent 1: Vanilla PPO     & {[FILL]} / 50 & {[FILL]} / 50 \\
-Agent 2: BC only         & {[FILL]} / 50 & {[FILL]} / 50 \\
-Agent 3: BC + PPO + Shaping & {[FILL]} / 50 & {[FILL]} / 50 \\
+Agent 1: PPO vs random & 31 / 200 & 0.155 \\
+Agent 2: BC only & \textit{placeholder} & \textit{placeholder} \\
+Agent 3: BC + PPO + shaping & 136 / 200 & 0.680 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -258,73 +326,107 @@ Agent 3: BC + PPO + Shaping & {[FILL]} / 50 & {[FILL]} / 50 \\
 
 \section{Analysis and Discussion}
 
-\paragraph{Why vanilla PPO fails.}
-With sparse $\pm1$ rewards and random initialization, the agent scores roughly
-once every 20 episodes in early training.
-The Generalized Advantage Estimate~\citep{schulman2016gae} is near zero almost
-everywhere, so PPO weight updates carry negligible policy gradient signal.
-This confirms that purely sparse rewards are insufficient to bootstrap soccer play
-from scratch, consistent with findings in other sparse-reward locomotion
-tasks~\citep{andrychowicz2021matters}.
+\paragraph{Agent 1 learns a usable PPO baseline.}
+Our earlier sparse-reward experiments against weaker or more static opponents were
+useful for debugging, but the clean logged baseline used in this report is the
+\texttt{PPO\_team\_vs\_random} run.
+In that setting, PPO from random initialization is able to learn meaningful team
+behavior.
+The final reward mean reaches 1.72 at 3.6M timesteps, and the mean episode length
+drops sharply from 398 at the beginning of training to about 103 by the final
+iteration.
+This suggests the policy learns to end episodes more decisively, likely by
+scoring earlier and avoiding the long random drift seen at initialization.
+However, when evaluated against the much stronger
+\texttt{baseline\_teacher\_agent}, this policy wins only 31 out of 200 games,
+showing that competence against a random opponent does not automatically transfer
+to a stronger adversary.
 
-\paragraph{Why behavioral cloning works.}
-By supervising directly on 33k expert transitions, BC entirely bypasses the
-exploration bottleneck.
-The 98\% action-matching accuracy means the BC policy already plays at near-baseline
-level before any RL update.
-This validates imitation learning as an effective initialisation strategy for
-sparse-reward competitive environments.
+\paragraph{Agent 3 solves a harder problem than Agent 1.}
+Although Agent~3's final reward mean (0.91) is numerically lower than Agent~1's,
+this does not imply that Agent~1 is the stronger agent overall.
+Agent~1 is trained against a default random opponent in a simpler
+\texttt{team\_vs\_policy} setting, while Agent~3 is trained against the fixed
+pre-trained baseline in a custom multi-agent wrapper.
+The more meaningful reading of Agent~3's curve is that BC initialization plus
+reward shaping makes it possible to learn nontrivial behavior in a much more
+difficult training regime.
 
-\paragraph{Effect of observation normalisation.}
-The raw 336-dim observation mixes ray fractions ($[0,1]$) with physical velocities
-($[-10,10]$).
-Without normalisation, the first-layer weight gradients associated with velocity
-features are 10$\times$ smaller than those for ray features, slowing convergence.
-Z-score normalisation equalises the effective feature scales and reduces the condition
-number of the input covariance, consistent with standard best practice in deep
-RL~\citep{andrychowicz2021matters}.
+\paragraph{Behavioral cloning is the bridge between the two stages.}
+The repository's BC pipeline in \texttt{distill\_bc\_obs.py} is the mechanism that
+makes Agent~3 plausible.
+Instead of starting PPO from random weights against the baseline, the final agent
+begins from a policy already aligned with expert baseline actions.
+Even though we do not have the original BC training logs in the repository, the
+checkpoint structure and loader code show that the BC stage preserves both network
+weights and observation-normalization statistics for downstream reuse.
+This is a practical example of imitation learning reducing the exploration burden
+before policy-gradient fine-tuning.
 
-\paragraph{Effect of reward shaping.}
-The potential-based ball-progress term is theoretically guaranteed to preserve the
-optimal policy~\citep{ng1999policy}: $r^{\text{prog}} = \gamma\Phi(s') - \Phi(s)$
-provides a dense reward signal at every step without introducing a new optimum.
-The shooting signal and positioning terms encourage tactically sound play (forward
-passes, defensive coverage) that correlates with goal-scoring, accelerating convergence
-beyond what BC alone achieves.
-The global scale factor $\alpha = 0.15$ keeps the total shaped reward per episode
-($\approx 0.8$) well below the task reward magnitude ($\pm 1$), preventing the agent
-from optimising shaped components at the expense of winning.
+\paragraph{Placeholder analysis for Agent 2.}
+Insert the teammate's BC-specific observations here once the missing artifacts are
+available.
+Useful details would include convergence speed during supervised training, final
+branch-wise action accuracy, and whether the BC agent qualitatively reproduced the
+baseline's positioning and ball-control behavior during \texttt{watch} or
+\texttt{evaluate} runs.
+
+\paragraph{Reward shaping helps, but the final checkpoint is not always the best checkpoint.}
+The shaped fine-tuning run improves from an initial reward mean of 0.24 to a peak
+of 1.28 around 5.04M timesteps, then declines to 0.91 by the final 7.2M-timestep
+checkpoint.
+This matters for packaging and evaluation: the best policy for submission may be a
+mid-training checkpoint such as \texttt{checkpoint-630}, not the final saved
+model.
+This is exactly the kind of behavior for which checkpointed Ray training is
+useful, because it lets us select by measured validation signal rather than by
+training duration alone.
+Even with the currently packaged checkpoint, the shaped fine-tuned agent wins 136
+out of 200 games against \texttt{baseline\_teacher\_agent}, which is a clear
+improvement over Agent~1 in this direct comparison.
+
+\paragraph{Observation normalization is well motivated even when logs are missing.}
+The BC distillation script normalizes all 336 observation dimensions before
+supervised training.
+Given that the observation mixes values on very different scales, this is a
+reasonable engineering choice and consistent with broader deep RL practice
+~\citep{andrychowicz2021matters}.
+Because the normalization statistics are saved with the BC checkpoint and applied
+again at inference time, the modification is not just theoretical; it is an
+implemented part of the training-to-deployment pipeline.
 
 \paragraph{Limitations.}
-The reward shaping relies on absolute position data from the \texttt{info} dictionary,
-which is only populated when the training binary sends 345-dimensional observations.
-If the training binary sends the standard 336-dimensional observation, the shaping
-terms are zero and the system degrades gracefully to pure BC fine-tuning.
-Future work could extract approximate position estimates directly from the ray-cast
-observation vector.
+Our main limitation is artifact completeness rather than lack of ideas.
+The repository preserves two full Ray training runs and several packaged agents,
+but not a consistent evaluation suite or the BC-only learning curves.
+As a result, we can make strong claims about how the logged PPO runs behaved
+during training, but only weaker claims about final head-to-head playing strength.
+Future iterations should standardize evaluation runs for every major checkpoint
+and save those summaries alongside the training curves.
 
 %===============================================================================
 
 \section{Conclusion}
 
-We demonstrated that the sparse-reward challenge in multi-agent soccer can be
-effectively addressed by combining imitation learning with potential-based reward
-shaping.
-Vanilla PPO from random initialization fails entirely; behavioral cloning from an
-expert provides a strong starting point; and PPO fine-tuning with shaped rewards
-further improves performance.
-Our modifications to both the observation space (z-score normalization) and the reward
-function (ball progress, shooting, coverage, and positioning terms) are each grounded
-in established theory, and together they enable the agent to surpass the pre-trained
-baseline in head-to-head evaluation.
+This project produced a clear progression of agent-building strategies for
+SoccerTwos.
+Direct PPO against a random opponent yields a solid baseline and demonstrates that
+the repository's CPU-only RLlib setup can learn coordinated team behavior.
+Behavioral cloning then provides a practical way to transfer the provided baseline
+agent's behavior into a student policy.
+Finally, BC-initialized PPO with reward shaping enables training against a much
+stronger opponent and achieves its best performance at an intermediate checkpoint,
+highlighting the importance of both initialization and checkpoint selection.
+The strongest empirical claims in this report come from the preserved Ray logs,
+and those logs support the overall conclusion that imitation learning and reward
+shaping are useful tools for tackling sparse-reward multi-agent soccer.
 
 %===============================================================================
 
 \clearpage
 
-\acknowledgments{We thank the course teaching staff for providing the SoccerTwos
-starter code and the pre-trained baseline agent. Compute was performed on local CPU
-hardware.}
+\acknowledgments{We thank the course staff for the SoccerTwos starter code and
+the provided baseline agent. Compute was performed on local CPU hardware.}
 
 %===============================================================================
 
