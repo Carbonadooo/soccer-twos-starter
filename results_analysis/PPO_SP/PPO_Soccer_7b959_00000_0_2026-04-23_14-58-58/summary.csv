@@ -1,0 +1,2 @@
+run,timesteps_total,time_total_s,episode_reward_mean,episode_reward_max,episode_reward_min,episode_len_mean,timers/sample_time_ms,timers/learn_time_ms,timers/sample_throughput,timers/learn_throughput
+PPO_SP/PPO_Soccer_7b959_00000_0_2026-04-23_14-58-58,1200000,1971.6127116680143,-0.0029239986464381,1.7992000579833984,-2.0,955.81,6144.871,14137.192,1952.848,848.825
