@@ -1,0 +1,2 @@
+run,timesteps_total,time_total_s,episode_reward_mean,episode_reward_max,episode_reward_min,episode_len_mean,timers/sample_time_ms,timers/learn_time_ms,timers/sample_throughput,timers/learn_throughput
+PPO_bc_finetune_vs_opponent_pool/PPO_BlueTeamVsOpponentPool_8f7b4_00000_0_2026-04-24_14-08-13,3424000,35666.013807058334,0.5177056384593431,2.1751783556266595,-3.0793703059333586,53.98620689655172,5701.2,46536.648,1403.213,171.908
